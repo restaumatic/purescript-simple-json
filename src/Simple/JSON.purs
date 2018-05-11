@@ -50,8 +50,8 @@ import Type.Row (class RowLacks, class RowToList, Cons, Nil, RLProxy(RLProxy), k
 readJSON :: forall a
   .  ReadForeign a
   => String
-  -> Either MultipleErrors a
-readJSON = runExcept <<< (readImpl <=< parseJSON)
+  -> F a
+readJSON = readImpl <=< parseJSON
 
 -- | Read a JSON string to a type `a` using `F a`. Useful with record types.
 readJSON' :: forall a
@@ -76,8 +76,8 @@ write = writeImpl
 read :: forall a
    . ReadForeign a
   => Foreign
-  -> Either MultipleErrors a
-read = runExcept <<< readImpl
+  -> F a
+read = readImpl
 
 read' :: forall a
   .  ReadForeign a

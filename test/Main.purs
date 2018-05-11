@@ -4,6 +4,7 @@ import Prelude
 
 import Control.Monad.Aff (Aff)
 import Control.Monad.Eff (Eff)
+import Control.Monad.Except (runExcept)
 import Data.Argonaut.Core (Json)
 import Data.Argonaut.Parser (jsonParser)
 import Data.Either (Either(..), either, fromLeft, isRight)
@@ -76,14 +77,14 @@ type MyTestVariant = Variant
 roundtrips :: forall a. ReadForeign a => WriteForeign a => Proxy a -> String -> Aff (RunnerEffects ()) Unit
 roundtrips _ enc0 = do
   let dec0 :: E a
-      dec0 = readJSON enc0
+      dec0 = runExcept (readJSON enc0)
       enc1 = either (const "bad1") writeJSON dec0
       json0 :: Either String Json
       json0 = jsonParser enc0
       json1 :: Either String Json
       json1 = jsonParser enc1
       dec1 :: E a
-      dec1 = readJSON enc1
+      dec1 = runExcept (readJSON enc1)
       enc2 = either (const "bad2") writeJSON dec1
   when (json0 /= json1) $ fail $ "\n\torig: " <> show json0 <> "\n\tenc: " <> show json1
   when (enc1 /= enc2) $ fail enc0
@@ -92,21 +93,21 @@ main :: Eff (RunnerEffects ()) Unit
 main = run [consoleReporter] do
   describe "readJSON" do
     it "fails with invalid JSON" do
-      let result = readJSON """
+      let result = runExcept (readJSON """
         { "c": 1, "d": 2}
-      """
+      """)
       (unsafePartial $ fromLeft result) `shouldEqual`
         (NonEmptyList (NonEmpty (ErrorAtProperty "a" (TypeMismatch "Int" "Undefined")) Nil))
       isRight (result :: E MyTest) `shouldEqual` false
 
     it "works with missing Maybe fields by setting them to Nothing" do
-      let result = readJSON "{}"
+      let result = runExcept (readJSON "{}")
       (writeJSON <$> (result :: E MyTestMaybe)) `shouldEqual` (Right """{}""")
 
     it "fails with undefined for null with correct error message" do
-      let result = readJSON """
+      let result = runExcept (readJSON """
         { "a": "asdf" }
-      """
+      """)
       (unsafePartial $ fromLeft result) `shouldEqual`
         (NonEmptyList (NonEmpty (ErrorAtProperty "b" (TypeMismatch "Nullable String" "Undefined")) Nil))
       isRight (result :: E MyTestNullable) `shouldEqual` false
