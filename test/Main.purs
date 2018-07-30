@@ -2,26 +2,25 @@ module Test.Main where
 
 import Prelude
 
-import Control.Monad.Aff (Aff)
-import Control.Monad.Eff (Eff)
 import Control.Monad.Except (runExcept)
-import Data.Argonaut.Core (Json)
-import Data.Argonaut.Parser (jsonParser)
+import Data.Bifunctor (lmap)
 import Data.Either (Either(..), either, fromLeft, isRight)
-import Data.Foreign (ForeignError(..), MultipleErrors)
 import Data.List (List(..))
 import Data.List.NonEmpty (NonEmptyList(..))
 import Data.Maybe (Maybe)
 import Data.NonEmpty (NonEmpty(..))
 import Data.Nullable (Nullable)
-import Data.StrMap (StrMap)
 import Data.Variant (Variant)
+import Effect (Effect)
+import Effect.Exception (throw)
+import Foreign (Foreign, ForeignError(..), MultipleErrors)
+import Foreign.Object (Object)
 import Partial.Unsafe (unsafePartial)
-import Simple.JSON (class ReadForeign, class WriteForeign, readJSON, writeJSON)
-import Test.Spec (describe, it)
-import Test.Spec.Assertions (fail, shouldEqual)
-import Test.Spec.Reporter (consoleReporter)
-import Test.Spec.Runner (RunnerEffects, run)
+import Simple.JSON (class ReadForeign, class WriteForeign, parseJSON, readJSON, writeJSON)
+import Test.Assert (assert)
+import Test.EnumSumGeneric as Test.EnumSumGeneric
+import Test.Generic as Test.Generic
+import Test.Inferred as Test.Inferred
 import Type.Proxy (Proxy(..))
 
 type E a = Either MultipleErrors a
@@ -43,7 +42,7 @@ type MyTestNull =
 
 type MyTestStrMap =
   { a :: Int
-  , b :: StrMap Int
+  , b :: Object Int
   }
 
 type MyTestMaybe =
@@ -73,64 +72,87 @@ type MyTestVariant = Variant
   , b :: Int
   )
 
-
-roundtrips :: forall a. ReadForeign a => WriteForeign a => Proxy a -> String -> Aff (RunnerEffects ()) Unit
+roundtrips :: forall a. ReadForeign a => WriteForeign a => Proxy a -> String -> Effect Unit
 roundtrips _ enc0 = do
-  let dec0 :: E a
+  let parseJSON' = lmap show <<< runExcept <<< parseJSON
+      dec0 :: E a
       dec0 = runExcept (readJSON enc0)
       enc1 = either (const "bad1") writeJSON dec0
-      json0 :: Either String Json
-      json0 = jsonParser enc0
-      json1 :: Either String Json
-      json1 = jsonParser enc1
+      json0 :: Either String Foreign
+      json0 = parseJSON' enc0
+      json1 :: Either String Foreign
+      json1 = parseJSON' enc1
       dec1 :: E a
       dec1 = runExcept (readJSON enc1)
       enc2 = either (const "bad2") writeJSON dec1
-  when (json0 /= json1) $ fail $ "\n\torig: " <> show json0 <> "\n\tenc: " <> show json1
-  when (enc1 /= enc2) $ fail enc0
+  when (enc1 /= enc2) $ throw enc0
 
-main :: Eff (RunnerEffects ()) Unit
-main = run [consoleReporter] do
-  describe "readJSON" do
-    it "fails with invalid JSON" do
-      let result = runExcept (readJSON """
-        { "c": 1, "d": 2}
-      """)
-      (unsafePartial $ fromLeft result) `shouldEqual`
-        (NonEmptyList (NonEmpty (ErrorAtProperty "a" (TypeMismatch "Int" "Undefined")) Nil))
-      isRight (result :: E MyTest) `shouldEqual` false
+shouldEqual :: forall a . Eq a => a -> a -> Effect Unit
+shouldEqual a b =
+  assert (a == b)
 
-    it "works with missing Maybe fields by setting them to Nothing" do
-      let result = runExcept (readJSON "{}")
-      (writeJSON <$> (result :: E MyTestMaybe)) `shouldEqual` (Right """{}""")
+readJSON' :: forall a. ReadForeign a => String -> Either (NonEmptyList ForeignError) a
+readJSON' = runExcept <<< readJSON
 
-    it "fails with undefined for null with correct error message" do
-      let result = runExcept (readJSON """
-        { "a": "asdf" }
-      """)
-      (unsafePartial $ fromLeft result) `shouldEqual`
-        (NonEmptyList (NonEmpty (ErrorAtProperty "b" (TypeMismatch "Nullable String" "Undefined")) Nil))
-      isRight (result :: E MyTestNullable) `shouldEqual` false
+main :: Effect Unit
+main = do
+  shouldEqual 1 1
 
-  describe "roundtrips" do
-    it "works with proper JSON" $ roundtrips (Proxy :: Proxy MyTest) """
-        { "a": 1, "b": "asdf", "c": true, "d": ["A", "B"]}
-      """
-    it "works with JSON lacking Maybe field" $ roundtrips (Proxy :: Proxy MyTestNull) """
-        { "a": 1, "b": "asdf", "c": true, "d": ["A", "B"]}
-      """
-    it "works with JSON containing Maybe field" $ roundtrips (Proxy :: Proxy MyTestNull) """
-        { "a": 1, "b": "asdf", "c": true, "d": ["A", "B"], "e": ["C", "D"]}
-      """
-    it "works with JSON containing StrMap field" $ roundtrips (Proxy :: Proxy MyTestStrMap) """
-        { "a": 1, "b": {"asdf": 1, "c": 2} }
-      """
-    it "works with Maybe field and existing value" $ roundtrips (Proxy :: Proxy MyTestMaybe) """
-        { "a": "foo" }
-      """
-    it "works with Nullable" $ roundtrips (Proxy :: Proxy MyTestNullable) """
-      { "a": null, "b": "a" }
-    """
-    it "works with Variant" $ roundtrips (Proxy :: Proxy MyTestVariant) """
-      { "type": "b", "value": 123  }
-    """
+  -- "fails with invalid JSON"
+  let r1 = readJSON' """{ "c": 1, "d": 2}"""
+  (unsafePartial $ fromLeft r1) `shouldEqual`
+    (NonEmptyList (NonEmpty (ErrorAtProperty "a" (TypeMismatch "Int" "Undefined")) Nil))
+  isRight (r1 :: E MyTest) `shouldEqual` false
+
+  -- "works with missing Maybe fields by setting them to Nothing"
+  let r2 = readJSON' "{}"
+  (writeJSON <$> (r2 :: E MyTestMaybe)) `shouldEqual` (Right """{}""")
+
+  -- "fails with undefined for null with correct error message"
+  let r3 = readJSON' """
+    { "a": "asdf" }
+  """
+  (unsafePartial $ fromLeft r3) `shouldEqual`
+    (NonEmptyList (NonEmpty (ErrorAtProperty "b" (TypeMismatch "Nullable String" "Undefined")) Nil))
+  (isRight (r3 :: E MyTestNullable)) `shouldEqual` false
+
+  -- roundtrips
+  -- "works with proper JSON"
+  roundtrips (Proxy :: Proxy MyTest) """
+    { "a": 1, "b": "asdf", "c": true, "d": ["A", "B"]}
+  """
+
+  -- "works with JSON lacking Maybe field"
+  roundtrips (Proxy :: Proxy MyTestNull) """
+    { "a": 1, "b": "asdf", "c": true, "d": ["A", "B"]}
+  """
+
+  -- "works with JSON containing Maybe field"
+  roundtrips (Proxy :: Proxy MyTestNull) """
+    { "a": 1, "b": "asdf", "c": true, "d": ["A", "B"], "e": ["C", "D"]}
+  """
+
+  -- -- "works with JSON containing Object field"
+  roundtrips (Proxy :: Proxy MyTestStrMap) """
+    { "a": 1, "b": {"asdf": 1, "c": 2} }
+  """
+
+  -- "works with Maybe field and existing value"
+  roundtrips (Proxy :: Proxy MyTestMaybe) """
+    { "a": "foo" }
+  """
+
+  -- "works with Nullable"
+  roundtrips (Proxy :: Proxy MyTestNullable) """
+    { "a": null, "b": "a" }
+  """
+
+  -- "works with Variant"
+  roundtrips (Proxy :: Proxy MyTestVariant) """
+    { "type": "b", "value": 123  }
+  """
+
+  -- run examples
+  Test.Generic.main
+  Test.EnumSumGeneric.main
+  Test.Inferred.main
